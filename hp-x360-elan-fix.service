@@ -4,7 +4,7 @@ Requires=systemd-udevd.service
 After=systemd-udevd.service
 
 [Service]
-ExecStart=/home/kali/workspace/hp-x360-elan-fix/target/debug/hp-x360-elan-fix
+ExecStart=/bin/sh -c "/usr/bin/sleep 2 && /usr/bin/env RUST_BACKTRACE=full /home/kali/workspace/hp-x360-elan-fix/target/debug/hp-x360-elan-fix"
 
 [Install]
 WantedBy=multi-user.target
