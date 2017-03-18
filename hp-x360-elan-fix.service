@@ -1,0 +1,10 @@
+[Unit]
+Description=Button 2 Fix for ELAN Digitizer
+Requires=systemd-udevd.service
+After=systemd-udevd.service
+
+[Service]
+ExecStart=/home/kali/workspace/hp-x360-elan-fix/target/debug/hp-x360-elan-fix
+
+[Install]
+WantedBy=multi-user.target

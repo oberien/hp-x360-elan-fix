@@ -1,0 +1,10 @@
+[package]
+name = "hp-x360-elan-fix"
+version = "0.1.0"
+authors = ["oberien <jaro.fietz@gmx.de>"]
+
+[dependencies]
+evdev = { git = "https://github.com/bit-shift/evdev" }
+libc = "0.2.21"
+uinput = "0.1.2"
+uinput-sys = "0.1.5"
