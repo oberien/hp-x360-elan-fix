@@ -5,9 +5,19 @@ extern crate uinput;
 
 mod u_input;
 
+use std::os::unix::io::AsRawFd;
+
 use evdev::Device as EvDevice;
 use uinput::Device as UDevice;
-use std::os::unix::io::AsRawFd;
+use uinput_sys::{
+    EV_KEY,
+    EV_ABS,
+    BTN_TOOL_RUBBER,
+    BTN_TOUCH,
+    BTN_STYLUS2,
+    ABS_X,
+    ABS_Y,
+};
 
 const EVIOCGRAB: libc::c_ulong = 1074021776;
 
@@ -39,14 +49,35 @@ unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
     };
     let res = libc::epoll_ctl(pollfd, libc::EPOLL_CTL_ADD, device.fd(), &mut evt);
     assert!(res >= 0, "Error adding fd to poll: {}", res);
+    let mut x_changed = false;
+    let mut y_changed = false;
+    let mut needs_touch = false;
     loop {
         let res = libc::epoll_wait(pollfd, &mut evt, 1, -1);
         assert!(res >= 0, "Error waiting for fd: {}", res);
         for evt in device.events_no_sync().unwrap() {
-            if evt._type == 1 && evt.code == 321 {
-                input.write(evt._type as i32, 332, evt.value).unwrap();
+            let _type = evt._type as i32;
+            let code = evt.code as i32;
+            let value = evt.value;
+
+            if _type == EV_ABS && code == ABS_X {
+                x_changed = true;
+            } else if _type == EV_ABS && code == ABS_Y {
+                y_changed = true;
+            }
+
+            if needs_touch && x_changed && y_changed {
+                input.write(EV_KEY, BTN_TOUCH, 1).unwrap();
+            }
+
+            if _type == EV_KEY && code == BTN_TOOL_RUBBER {
+                input.write(_type, BTN_STYLUS2, value).unwrap();
+            } else if _type == EV_KEY && code == BTN_TOUCH && value == 1 {
+                x_changed = false;
+                y_changed = false;
+                needs_touch = true;
             } else {
-                input.write(evt._type as i32, evt.code as i32, evt.value).unwrap();
+                input.write(_type, code, value).unwrap();
             }
         }
     }
