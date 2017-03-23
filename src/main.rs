@@ -6,6 +6,7 @@ extern crate uinput;
 mod u_input;
 
 use std::os::unix::io::AsRawFd;
+use std::io::Error;
 
 use evdev::Device as EvDevice;
 use uinput::Device as UDevice;
@@ -32,7 +33,7 @@ fn main() {
     let mut device = device.unwrap();
 
     let res = unsafe { libc::ioctl(device.fd(), EVIOCGRAB, 1) };
-    assert!(res >= 0, "Error grabbing event device: {}", res);
+    assert!(res >= 0, "Error grabbing event device: {}: {:?}", res, Error::last_os_error());
 
     let file = unsafe { u_input::create() };
     let mut input = UDevice::new(file.as_raw_fd());
@@ -42,19 +43,23 @@ fn main() {
 
 unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
     let pollfd = libc::epoll_create(1);
-    assert!(pollfd >= 0, "Error creating epoll: {}", pollfd);
+    assert!(pollfd >= 0, "Error creating epoll: {}: {:?}", pollfd, Error::last_os_error());
     let mut evt = libc::epoll_event {
         events: libc::EPOLLIN as u32,
         u64: device.fd() as u64,
     };
     let res = libc::epoll_ctl(pollfd, libc::EPOLL_CTL_ADD, device.fd(), &mut evt);
-    assert!(res >= 0, "Error adding fd to poll: {}", res);
+    assert!(res >= 0, "Error adding fd to poll: {}: {:?}", res, Error::last_os_error());
     let mut x_changed = false;
     let mut y_changed = false;
     let mut needs_touch = false;
     loop {
         let res = libc::epoll_wait(pollfd, &mut evt, 1, -1);
-        assert!(res >= 0, "Error waiting for fd: {}", res);
+        if res == -1 && Error::last_os_error().raw_os_error().unwrap() == 4 {
+            // EINTR is gotten on suspends
+            continue;
+        }
+        assert!(res >= 0, "Error waiting for fd: {}: {:?}", res, Error::last_os_error());
         for evt in device.events_no_sync().unwrap() {
             let _type = evt._type as i32;
             let code = evt.code as i32;
