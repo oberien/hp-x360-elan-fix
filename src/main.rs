@@ -11,13 +11,17 @@ use std::io::Error;
 use evdev::Device as EvDevice;
 use uinput::Device as UDevice;
 use uinput_sys::{
+    EV_SYN,
     EV_KEY,
     EV_ABS,
+    EV_MSC,
     BTN_TOOL_RUBBER,
     BTN_TOUCH,
     BTN_STYLUS2,
     ABS_X,
     ABS_Y,
+    SYN_REPORT,
+    MSC_SCAN,
 };
 
 const EVIOCGRAB: libc::c_ulong = 1074021776;
@@ -50,8 +54,8 @@ unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
     };
     let res = libc::epoll_ctl(pollfd, libc::EPOLL_CTL_ADD, device.fd(), &mut evt);
     assert!(res >= 0, "Error adding fd to poll: {}: {:?}", res, Error::last_os_error());
-    let mut x_changed = false;
-    let mut y_changed = false;
+    let mut valuex = -1;
+    let mut valuey = -1;
     let mut needs_touch = false;
     loop {
         let res = libc::epoll_wait(pollfd, &mut evt, 1, -1);
@@ -65,24 +69,40 @@ unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
             let code = evt.code as i32;
             let value = evt.value;
 
-            if _type == EV_ABS && code == ABS_X {
-                x_changed = true;
-            } else if _type == EV_ABS && code == ABS_Y {
-                y_changed = true;
-            }
-
-            if needs_touch && x_changed && y_changed {
+            if needs_touch && valuex >= 0 && valuey >= 0 {
+                input.write(EV_SYN, SYN_REPORT, 0).unwrap();
+                input.write(EV_MSC, MSC_SCAN, 0xd0042).unwrap();
                 input.write(EV_KEY, BTN_TOUCH, 1).unwrap();
+                needs_touch = false;
             }
 
-            if _type == EV_KEY && code == BTN_TOOL_RUBBER {
-                input.write(_type, BTN_STYLUS2, value).unwrap();
-            } else if _type == EV_KEY && code == BTN_TOUCH && value == 1 {
-                x_changed = false;
-                y_changed = false;
-                needs_touch = true;
-            } else {
-                input.write(_type, code, value).unwrap();
+            if _type == EV_ABS && code == ABS_X {
+                valuex = value;
+            } else if _type == EV_ABS && code == ABS_Y {
+                valuey = value;
+            }
+
+            match (_type, code, value) {
+                (EV_KEY, BTN_TOOL_RUBBER, _) => {
+                    // Map rubber to stylus2
+                    input.write(_type, BTN_STYLUS2, value).unwrap();
+                },
+                (EV_KEY, BTN_TOUCH, 1) => {
+                    valuex = -1;
+                    valuey = -1;
+                    needs_touch = true;
+                },
+                (EV_MSC, MSC_SCAN, 0xd0042) => {
+                    // This is send both on BTN_TOUCH press and release.
+                    // We are sending it on press before we send BTN_TOUCH.
+                    // In the next match arm we are handling release ones.
+                    ()
+                },
+                (EV_KEY, BTN_TOUCH, 0) => {
+                    input.write(EV_MSC, MSC_SCAN, 0xd0042).unwrap();
+                    input.write(_type, code, value).unwrap();
+                }
+                _ => input.write(_type, code, value).unwrap(),
             }
         }
     }
