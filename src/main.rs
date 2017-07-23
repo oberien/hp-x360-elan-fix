@@ -20,6 +20,7 @@ use uinput_sys::{
     BTN_STYLUS2,
     ABS_X,
     ABS_Y,
+    ABS_PRESSURE,
     SYN_REPORT,
     MSC_SCAN,
 };
@@ -56,6 +57,7 @@ unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
     assert!(res >= 0, "Error adding fd to poll: {}: {:?}", res, Error::last_os_error());
     let mut valuex = -1;
     let mut valuey = -1;
+    let mut pressure = -1;
     let mut needs_touch = false;
     loop {
         let res = libc::epoll_wait(pollfd, &mut evt, 1, -1);
@@ -69,17 +71,21 @@ unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
             let code = evt.code as i32;
             let value = evt.value;
 
-            if needs_touch && valuex >= 0 && valuey >= 0 {
+            if needs_touch && valuex >= 0 && valuey >= 0 && pressure >= 0 {
+                // For some reason some layer between the event device and
+                // the actual applications, a lot of events are just swallowed.
+                // Therefore we just generate 5 extra events in hope that one
+                // will survive the event cannibalism.
+                for (dx, dy) in (-5..0).zip(-5..0) {
+                    input.write(EV_SYN, SYN_REPORT, 0).unwrap();
+                    input.write(EV_ABS, ABS_X, valuex + dx).unwrap();
+                    input.write(EV_ABS, ABS_Y, valuey + dy).unwrap();
+                }
                 input.write(EV_SYN, SYN_REPORT, 0).unwrap();
                 input.write(EV_MSC, MSC_SCAN, 0xd0042).unwrap();
                 input.write(EV_KEY, BTN_TOUCH, 1).unwrap();
+                input.write(EV_ABS, ABS_PRESSURE, pressure).unwrap();
                 needs_touch = false;
-            }
-
-            if _type == EV_ABS && code == ABS_X {
-                valuex = value;
-            } else if _type == EV_ABS && code == ABS_Y {
-                valuey = value;
             }
 
             match (_type, code, value) {
@@ -90,6 +96,7 @@ unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
                 (EV_KEY, BTN_TOUCH, 1) => {
                     valuex = -1;
                     valuey = -1;
+                    pressure = -1;
                     needs_touch = true;
                 },
                 (EV_MSC, MSC_SCAN, 0xd0042) => {
@@ -98,6 +105,9 @@ unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
                     // In the next match arm we are handling release ones.
                     ()
                 },
+                (EV_ABS, ABS_PRESSURE, val) if needs_touch => pressure = val,
+                (EV_ABS, ABS_X, x) if needs_touch => valuex = x,
+                (EV_ABS, ABS_Y, y) if needs_touch => valuey = y,
                 (EV_KEY, BTN_TOUCH, 0) => {
                     input.write(EV_MSC, MSC_SCAN, 0xd0042).unwrap();
                     input.write(_type, code, value).unwrap();
