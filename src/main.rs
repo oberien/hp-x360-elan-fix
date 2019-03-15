@@ -8,7 +8,7 @@ mod u_input;
 use std::os::unix::io::AsRawFd;
 use std::io::Error;
 
-use evdev::Device as EvDevice;
+use evdev::{Device as EvDevice, Types};
 use uinput::Device as UDevice;
 use uinput_sys::{
     EV_SYN,
@@ -28,9 +28,22 @@ use uinput_sys::{
 const EVIOCGRAB: libc::c_ulong = 1074021776;
 
 fn main() {
+    let expected_types = evdev::SYNCHRONIZATION
+        | evdev::KEY
+        | evdev::ABSOLUTE
+        | evdev::MISC;
     let mut device = None;
     for dev in evdev::enumerate() {
-        if dev.name().to_str().unwrap() == "ELAN22CA:00 04F3:22CA Pen" {
+        if dev.name().to_str().unwrap() == "ELAN22CA:00 04F3:22CA"
+            && dev.input_id().vendor == 0x4f3
+            && dev.input_id().product == 0x22ca
+            && dev.input_id().version == 0x100
+            && dev.events_supported().contains(expected_types)
+            && dev.keys_supported().contains(320)
+            && dev.keys_supported().contains(321)
+            && dev.keys_supported().contains(330)
+            && dev.keys_supported().contains(331)
+        {
             device = Some(dev);
             break;
         }
@@ -92,6 +105,8 @@ unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
                 (EV_KEY, BTN_TOOL_RUBBER, _) => {
                     // Map rubber to stylus2
                     input.write(_type, BTN_STYLUS2, value).unwrap();
+                    //input.write(EV_MSC, MSC_SCAN, 0xd003c).unwrap();
+                    //input.write(_type, BTN_TOOL_RUBBER, value).unwrap();
                 },
                 (EV_KEY, BTN_TOUCH, 1) => {
                     valuex = -1;

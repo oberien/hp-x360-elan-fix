@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["oberien <jaro.fietz@gmx.de>"]
 
 [dependencies]
-evdev = { git = "https://github.com/bit-shift/evdev" }
-libc = "0.2.21"
-uinput = "0.1.2"
-uinput-sys = "0.1.5"
+evdev = "0.10.1"
+libc = "0.2.50"
+uinput = "0.1.3"
+uinput-sys = "0.1.7"
