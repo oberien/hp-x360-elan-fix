@@ -2,21 +2,26 @@ extern crate evdev;
 extern crate libc;
 extern crate uinput_sys;
 extern crate uinput;
+extern crate mio;
 
 mod u_input;
 
 use std::os::unix::io::AsRawFd;
 use std::io::Error;
+use std::time::Duration;
 
-use evdev::{Device as EvDevice, Types};
+use evdev::{Device as EvDevice};
 use uinput::Device as UDevice;
+#[allow(unused_imports)]
 use uinput_sys::{
     EV_SYN,
     EV_KEY,
     EV_ABS,
     EV_MSC,
+    BTN_TOOL_PEN,
     BTN_TOOL_RUBBER,
     BTN_TOUCH,
+    BTN_STYLUS,
     BTN_STYLUS2,
     ABS_X,
     ABS_Y,
@@ -24,6 +29,7 @@ use uinput_sys::{
     SYN_REPORT,
     MSC_SCAN,
 };
+use mio::{unix::EventedFd, Events, Poll, Ready, PollOpt, Token};
 
 const EVIOCGRAB: libc::c_ulong = 1074021776;
 
@@ -60,74 +66,61 @@ fn main() {
 }
 
 unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
-    let pollfd = libc::epoll_create(1);
-    assert!(pollfd >= 0, "Error creating epoll: {}: {:?}", pollfd, Error::last_os_error());
-    let mut evt = libc::epoll_event {
-        events: libc::EPOLLIN as u32,
-        u64: device.fd() as u64,
-    };
-    let res = libc::epoll_ctl(pollfd, libc::EPOLL_CTL_ADD, device.fd(), &mut evt);
-    assert!(res >= 0, "Error adding fd to poll: {}: {:?}", res, Error::last_os_error());
-    let mut valuex = -1;
-    let mut valuey = -1;
-    let mut pressure = -1;
-    let mut needs_touch = false;
+    let poll = Poll::new().expect("can't create Poll");
+    let mut events = Events::with_capacity(1024);
+
+    // register polls
+    poll.register(&EventedFd(&device.fd()), Token(0), Ready::readable(), PollOpt::edge()).unwrap();
+
+    let mut x = 0;
+    let mut is_in_proximity = false;
     loop {
-        let res = libc::epoll_wait(pollfd, &mut evt, 1, -1);
-        if res == -1 && Error::last_os_error().raw_os_error().unwrap() == 4 {
-            // EINTR is gotten on suspends
-            continue;
-        }
-        assert!(res >= 0, "Error waiting for fd: {}: {:?}", res, Error::last_os_error());
-        for evt in device.events_no_sync().unwrap() {
-            let _type = evt._type as i32;
-            let code = evt.code as i32;
-            let value = evt.value;
-
-            if needs_touch && valuex >= 0 && valuey >= 0 && pressure >= 0 {
-                // For some reason some layer between the event device and
-                // the actual applications, a lot of events are just swallowed.
-                // Therefore we just generate 5 extra events in hope that one
-                // will survive the event cannibalism.
-                for (dx, dy) in (-5..0).zip(-5..0) {
-                    input.write(EV_SYN, SYN_REPORT, 0).unwrap();
-                    input.write(EV_ABS, ABS_X, valuex + dx).unwrap();
-                    input.write(EV_ABS, ABS_Y, valuey + dy).unwrap();
-                }
-                input.write(EV_SYN, SYN_REPORT, 0).unwrap();
-                input.write(EV_MSC, MSC_SCAN, 0xd0042).unwrap();
-                input.write(EV_KEY, BTN_TOUCH, 1).unwrap();
-                input.write(EV_ABS, ABS_PRESSURE, pressure).unwrap();
-                needs_touch = false;
+        // we need to send events every ~45ms due to the proximity out quirk of libinput
+        // https://gitlab.freedesktop.org/libinput/libinput/issues/381
+        let timeout = if is_in_proximity {
+            Some(Duration::from_millis(45))
+        } else {
+            None
+        };
+        poll.poll(&mut events, timeout).expect("poll failed");
+        if events.is_empty() {
+            // timeout fired, send slightly modified x event to prevent proximity quirk
+            if x % 2 == 0 {
+                x += 1;
+            } else {
+                x -= 1;
             }
+            input.write(EV_ABS, ABS_X, x).unwrap();
+            input.write(EV_SYN, SYN_REPORT, 0).unwrap();
+        }
+        for poll_evt in &events {
+            if poll_evt.token() == Token(0) {
+                for evt in device.events_no_sync().unwrap() {
+                    let typ = evt._type as i32;
+                    let code = evt.code as i32;
+                    let value = evt.value;
 
-            match (_type, code, value) {
-                (EV_KEY, BTN_TOOL_RUBBER, _) => {
-                    // Map rubber to stylus2
-                    input.write(_type, BTN_STYLUS2, value).unwrap();
-                    //input.write(EV_MSC, MSC_SCAN, 0xd003c).unwrap();
-                    //input.write(_type, BTN_TOOL_RUBBER, value).unwrap();
-                },
-                (EV_KEY, BTN_TOUCH, 1) => {
-                    valuex = -1;
-                    valuey = -1;
-                    pressure = -1;
-                    needs_touch = true;
-                },
-                (EV_MSC, MSC_SCAN, 0xd0042) => {
-                    // This is send both on BTN_TOUCH press and release.
-                    // We are sending it on press before we send BTN_TOUCH.
-                    // In the next match arm we are handling release ones.
-                    ()
-                },
-                (EV_ABS, ABS_PRESSURE, val) if needs_touch => pressure = val,
-                (EV_ABS, ABS_X, x) if needs_touch => valuex = x,
-                (EV_ABS, ABS_Y, y) if needs_touch => valuey = y,
-                (EV_KEY, BTN_TOUCH, 0) => {
-                    input.write(EV_MSC, MSC_SCAN, 0xd0042).unwrap();
-                    input.write(_type, code, value).unwrap();
+                    match (typ, code, value) {
+                        (EV_KEY, BTN_TOOL_RUBBER, _) => {
+                            // Map rubber to stylus2
+                            // https://gitlab.freedesktop.org/libinput/libinput/issues/259
+                            input.write(typ, BTN_STYLUS2, value).unwrap();
+                        }
+                        (EV_ABS, ABS_X, _) => {
+                            x = value;
+                            input.write(EV_ABS, ABS_X, value).unwrap();
+                        }
+                        (EV_KEY, BTN_TOOL_PEN, 0) => {
+                            is_in_proximity = false;
+                            input.write(EV_KEY, BTN_TOOL_PEN, 0).unwrap();
+                        }
+                        (EV_KEY, BTN_TOOL_PEN, 1) => {
+                            is_in_proximity = true;
+                            input.write(EV_KEY, BTN_TOOL_PEN, 1).unwrap();
+                        }
+                        _ => input.write(typ, code, value).unwrap(),
+                    }
                 }
-                _ => input.write(_type, code, value).unwrap(),
             }
         }
     }
