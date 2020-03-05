@@ -73,6 +73,7 @@ unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
     poll.register(&EventedFd(&device.fd()), Token(0), Ready::readable(), PollOpt::edge()).unwrap();
 
     let mut x = 0;
+    let mut last_plus = true;
     let mut is_in_proximity = false;
     loop {
         // we need to send events every ~45ms due to the proximity out quirk of libinput
@@ -85,11 +86,12 @@ unsafe fn main_loop(device: &mut EvDevice, input: &mut UDevice) -> ! {
         poll.poll(&mut events, timeout).expect("poll failed");
         if events.is_empty() {
             // timeout fired, send slightly modified x event to prevent proximity quirk
-            if x % 2 == 0 {
-                x += 1;
-            } else {
+            if last_plus {
                 x -= 1;
+            } else {
+                x += 1;
             }
+            last_plus = !last_plus;
             input.write(EV_ABS, ABS_X, x).unwrap();
             input.write(EV_SYN, SYN_REPORT, 0).unwrap();
         }
